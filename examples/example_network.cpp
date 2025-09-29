@@ -1,3 +1,5 @@
+#ifdef BUILD_NETWORKING
+
 #include "daric/daric.h"
 #include <chrono>
 #include <thread>
@@ -31,3 +33,5 @@ int main() {
 
     return 0;
 }
+
+#endif

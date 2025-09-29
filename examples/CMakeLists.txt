@@ -1,5 +1,15 @@
-add_executable(example_logger example_logger.cpp)
-target_link_libraries(example_logger PRIVATE Daric)
+# -----------------------------
+# Logger example
+# -----------------------------
+if(BUILD_LOGGER)
+    add_executable(example_logger example_logger.cpp)
+    target_link_libraries(example_logger PRIVATE Daric)
+endif()
 
-add_executable(example_network example_network.cpp)
-target_link_libraries(example_network PRIVATE Daric)
+# -----------------------------
+# Networking example
+# -----------------------------
+if(BUILD_NETWORKING)
+    add_executable(example_network example_network.cpp)
+    target_link_libraries(example_network PRIVATE Daric)
+endif()

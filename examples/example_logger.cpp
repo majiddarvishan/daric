@@ -1,3 +1,5 @@
+#ifdef BUILD_LOGGER
+
 #include "daric/daric.h"
 #include <chrono>
 
@@ -19,3 +21,4 @@ int main() {
     std::this_thread::sleep_for(std::chrono::seconds(2)); // wait tasks finish
     return 0;
 }
+#endif
