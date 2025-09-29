@@ -1,9 +1,8 @@
 # Daric
 
-**Daric** is a modern C++ utility library inspired by enterprise frameworks like Boost and Poco.
-It provides **thread-safe logging, thread pool management, and networking modules** out of the box. Daric is modular, so you can enable only the features you need.
-
----
+**Daric** is a modern C++ utility library.
+It provides **thread-safe logging, thread pool management, and networking modules** out of the box.
+Daric is modular, so you can enable only the features you need.
 
 ## Features
 
@@ -13,19 +12,18 @@ It provides **thread-safe logging, thread pool management, and networking module
 - **Modular CMake**: Select which modules to build: Logger, ThreadPool, Networking.
 - **Expandable**: Easily add new modules (database, serialization, etc.) without breaking existing code.
 
----
+
 
 ## Directory Structure
 
+```bash
 Daric/
 ├── CMakeLists.txt
 ├── include/daric/ # Public headers
 ├── src/ # Source files
 ├── examples/ # Usage examples
 └── tests/ # Unit tests
-
-
----
+```
 
 ## Build Instructions
 
@@ -75,6 +73,7 @@ cmake --install build --prefix /usr/local
 ```
 
 This will install:
+
 - libDaric.a → /usr/local/lib
 - include/daric/* → /usr/local/include/daric
 
@@ -108,4 +107,3 @@ int main() {
 - C++17 or newer
 - POSIX-compliant system (Linux/macOS) for Networking module (Windows requires Winsock adjustments)
 - CMake >= 3.16
-
