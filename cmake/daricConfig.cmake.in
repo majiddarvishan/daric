@@ -1,0 +1,27 @@
+@PACKAGE_INIT@
+
+# daric CMake configuration file
+
+include(CMakeFindDependencyMacro)
+
+# Add any required dependencies here
+# Example:
+# find_dependency(Threads REQUIRED)
+
+# Include the targets file
+include("${CMAKE_CURRENT_LIST_DIR}/daricTargets.cmake")
+
+# Set variables for convenience
+set(daric_VERSION @PROJECT_VERSION@)
+set(daric_VERSION_MAJOR @PROJECT_VERSION_MAJOR@)
+set(daric_VERSION_MINOR @PROJECT_VERSION_MINOR@)
+set(daric_VERSION_PATCH @PROJECT_VERSION_PATCH@)
+
+# Check that all required components are present
+check_required_components(daric)
+
+# Provide information about available modules
+set(daric_BUILD_LOGGER @BUILD_LOGGER@)
+set(daric_BUILD_THREADPOOL @BUILD_THREADPOOL@)
+set(daric_BUILD_NETWORKING @BUILD_NETWORKING@)
+set(daric_BUILD_OBJECT_POOL @BUILD_OBJECT_POOL@)

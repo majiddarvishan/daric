@@ -22,7 +22,7 @@ int main() {
 
     daric::TCPClient client("127.0.0.1", 8080);
     if(client.connectToServer()) {
-        client.sendMessage("Hello Daric Server!");
+        client.sendMessage("Hello daric Server!");
         std::string reply = client.receiveMessage();
         logger.log(daric::LogLevel::Info, "Server replied: " + reply);
         client.closeConnection();

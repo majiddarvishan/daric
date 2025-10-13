@@ -5,7 +5,7 @@ include(cmake/CPM.cmake)
 # -----------------------------
 if(BUILD_LOGGER)
     add_executable(example_logger example_logger.cpp)
-    target_link_libraries(example_logger PRIVATE Daric)
+    target_link_libraries(example_logger PRIVATE daric)
 endif()
 
 # -----------------------------
@@ -13,7 +13,7 @@ endif()
 # -----------------------------
 if(BUILD_NETWORKING)
     add_executable(example_network example_network.cpp)
-    target_link_libraries(example_network PRIVATE Daric)
+    target_link_libraries(example_network PRIVATE daric)
 endif()
 
 # -----------------------------
@@ -36,7 +36,7 @@ CPMAddPackage(
     add_executable(example_object_pool example_object_pool.cpp)
     target_link_libraries(example_object_pool
                 PRIVATE
-                Daric
+                daric
 
                 prometheus-cpp::pull
 )

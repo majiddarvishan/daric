@@ -5,7 +5,7 @@
 
 int main() {
     auto& logger = daric::Logger::instance();
-    logger.log(daric::LogLevel::Info, "Starting Daric example");
+    logger.log(daric::LogLevel::Info, "Starting daric example");
 
     daric::ThreadPool pool(4);
 
