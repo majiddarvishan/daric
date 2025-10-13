@@ -11,3 +11,9 @@
 #ifdef BUILD_NETWORKING
 #include "daric/networking.h"
 #endif
+
+#ifdef BUILD_OBJECT_POOL
+#include "daric/object_pool/thread_local_object_pool.h"
+#endif
+
+

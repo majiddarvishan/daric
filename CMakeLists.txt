@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(Daric VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # -----------------------------
@@ -10,11 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(BUILD_LOGGER "Build Logger module" ON)
 option(BUILD_THREADPOOL "Build ThreadPool module" ON)
 option(BUILD_NETWORKING "Build Networking module" ON)
+option(BUILD_OBJECT_POOL "Build ObjectPool module" ON)
 
 # -----------------------------
 # Collect sources
 # -----------------------------
 set(DARIC_SOURCES "")
+
 if(BUILD_LOGGER)
     list(APPEND DARIC_SOURCES src/logger.cpp)
 endif()
@@ -24,6 +26,10 @@ endif()
 
 if(BUILD_NETWORKING)
     list(APPEND DARIC_SOURCES src/networking.cpp)
+endif()
+
+if(BUILD_OBJECT_POOL)
+    list(APPEND DARIC_SOURCES src/thread_local_object_pool.cpp)
 endif()
 
 # Always include umbrella header
@@ -40,15 +46,19 @@ target_include_directories(Daric PUBLIC
 
 # Define macros for conditional compilation
 if(BUILD_LOGGER)
-target_compile_definitions(Daric PUBLIC BUILD_LOGGER)
+    target_compile_definitions(Daric PUBLIC BUILD_LOGGER)
 endif()
 
 if(BUILD_THREADPOOL)
-target_compile_definitions(Daric PUBLIC BUILD_THREADPOOL)
+    target_compile_definitions(Daric PUBLIC BUILD_THREADPOOL)
 endif()
 
 if(BUILD_NETWORKING)
-target_compile_definitions(Daric PUBLIC BUILD_NETWORKING)
+    target_compile_definitions(Daric PUBLIC BUILD_NETWORKING)
+endif()
+
+if(BUILD_OBJECT_POOL)
+    target_compile_definitions(Daric PUBLIC BUILD_OBJECT_POOL)
 endif()
 
 # Compiler warnings
