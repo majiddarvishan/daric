@@ -1,6 +1,6 @@
 #pragma once
 
-#include "prometheus_metrics.h"
+#include "internal/prometheus_metrics.h"
 
 #include <memory>
 #include <vector>
@@ -14,6 +14,8 @@
 #include <mutex>
 #include <chrono>
 
+namespace daric::object_pool
+{
 /*
  Generic ObjectPool
  - type-agnostic
@@ -36,7 +38,7 @@ public:
     {
         static_assert(!std::is_void_v<T>, "T must be object type");
         auto& subPool = getOrCreateSubPool<T>();
-        auto& metrics = PrometheusMetrics::instance().get_handles(std::type_index(typeid(T)),
+        auto& metrics = internal::PrometheusMetrics::instance().get_handles(std::type_index(typeid(T)),
                                                                   std::this_thread::get_id());
 
         T* raw = nullptr;
@@ -121,7 +123,7 @@ public:
 
         auto typeId = info.type;
         auto threadId = std::this_thread::get_id();
-        auto& metrics = PrometheusMetrics::instance().get_handles(typeId, threadId);
+        auto& metrics = internal::PrometheusMetrics::instance().get_handles(typeId, threadId);
 
         if (lifetime > 0)
             metrics.lifetime_hist->Observe(lifetime);
@@ -169,7 +171,7 @@ public:
     void set_max_pool_size(size_t size)
     {
         getOrCreateSubPool<T>().max_pool_size_ = size;
-        auto& metrics = PrometheusMetrics::instance().get_handles(std::type_index(typeid(T)),
+        auto& metrics = internal::PrometheusMetrics::instance().get_handles(std::type_index(typeid(T)),
                                                                   std::this_thread::get_id());
         metrics.max_size->Set(static_cast<double>(size));
     }
@@ -203,7 +205,7 @@ private:
         {
             // Cast to correct type
             T* t = static_cast<T*>(obj);
-            auto& metrics = PrometheusMetrics::instance()
+            auto& metrics = internal::PrometheusMetrics::instance()
                 .get_handles(std::type_index(typeid(T)), std::this_thread::get_id());
 
             if constexpr (requires(T& o) { o.reset(); }) {
@@ -244,10 +246,11 @@ private:
             raw->max_pool_size_ = global_max_pool_size_;
             pools_.emplace(idx, std::move(up));
 
-            auto& metrics = PrometheusMetrics::instance().get_handles(idx, std::this_thread::get_id());
+            auto& metrics = internal::PrometheusMetrics::instance().get_handles(idx, std::this_thread::get_id());
             metrics.max_size->Set(static_cast<double>(global_max_pool_size_));
             return *raw;
         }
         return *static_cast<SubPool<T>*>(pools_[idx].get());
     }
 };
+}

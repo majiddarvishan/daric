@@ -10,6 +10,8 @@
 #include <vector>
 #include <chrono>
 
+using namespace daric::object_pool;
+
 // Example message class
 struct Message {
     std::string src;
@@ -63,7 +65,7 @@ int main()
 
     auto exposer = std::make_unique<prometheus::Exposer>("0.0.0.0:9999");
     auto registry = std::make_shared<prometheus::Registry>();
-    PrometheusMetrics::instance().set_registry(registry);
+    ThreadLocalObjectPool::set_registry(registry);
 
     // Start the background reclaimer
     ThreadLocalObjectPool::start_reclaimer(200ms);

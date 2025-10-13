@@ -10,6 +10,8 @@
 #include <thread>
 #include <functional>
 
+namespace daric::object_pool
+{
 /*
  ThreadLocalObjectPool with automatic reclaimer thread.
 
@@ -138,6 +140,14 @@ public:
         td->drain_pending_to_pool();
     }
 
+#ifdef ENABLE_PROMETHEUS_METRICS
+    static void set_registry(std::shared_ptr<prometheus::Registry> reg)
+    {
+        daric::object_pool::internal::PrometheusMetrics::instance().set_registry(reg);
+    }
+#endif
+
+
 private:
     ThreadLocalObjectPool() : running_(false) {}
     ~ThreadLocalObjectPool() { stop_worker(); }
@@ -212,6 +222,4 @@ private:
 
     static inline std::atomic<size_t> global_max_pool_size_{1000};
 };
-
-// static storage
-// std::atomic<size_t> ThreadLocalObjectPool::global_max_pool_size_{1000};
+}

@@ -40,10 +40,6 @@ if(BUILD_NETWORKING)
     list(APPEND DARIC_SOURCES src/networking.cpp)
 endif()
 
-if(BUILD_OBJECT_POOL)
-    list(APPEND DARIC_SOURCES src/thread_local_object_pool.cpp)
-endif()
-
 # -----------------------------
 # Build daric library
 # -----------------------------
