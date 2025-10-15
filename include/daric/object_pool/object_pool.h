@@ -14,32 +14,51 @@
 #include <mutex>
 #include <chrono>
 
+/**
+ * ObjectPool
+ * -------------------------------------------------------------
+ * Supports any type T.
+ *
+ * Features:
+ *  - Thread-aware metrics (Prometheus)
+ *  - Lifetime tracking
+ *  - Global + per-type max size
+ *  - Factory-style create<T>(args...)
+ *  - Automatic reset() if defined
+ *
+ * Safety:
+ *  - When reusing an object from the pool, the code explicitly calls the destructor
+ *    for that object (raw->~T()) before placement-new constructing the new object.
+ *    This ensures proper cleanup of non-trivial members (file descriptors, buffers, etc).
+ */
 namespace daric::object_pool
 {
-/*
- Generic ObjectPool
- - type-agnostic
- - create_raw<T>(args...) -> returns raw pointer and records lifetime/type
- - make_shared_with_owner<T>(raw, ownerPool) -> returns shared_ptr whose deleter calls owner->release
- - release(void* obj) -> returns object back into the proper subpool
- - metrics integrated via PrometheusMetrics
-*/
 class ObjectPool
 {
+    struct LifetimeInfo {
+        std::chrono::steady_clock::time_point start;
+        std::type_index type{typeid(void)};  // Default to void type
+    };
+
+    std::unordered_map<void*, LifetimeInfo> lifetime_map_;
+    std::mutex lifetime_mtx_;
+    size_t global_max_pool_size_;
+
+
 public:
     explicit ObjectPool(size_t global_max_pool_size = 1000)
         : global_max_pool_size_(global_max_pool_size) {}
 
     ~ObjectPool() = default;
 
-    // Create but return raw pointer (caller will construct shared_ptr with custom deleter)
+    // --- Create with constructor arguments
     template<typename T, typename... Args>
-    T* create_raw(Args&&... args)
+    std::shared_ptr<T> create(Args&&... args)
     {
-        static_assert(!std::is_void_v<T>, "T must be object type");
         auto& subPool = getOrCreateSubPool<T>();
-        auto& metrics = internal::PrometheusMetrics::instance().get_handles(std::type_index(typeid(T)),
-                                                                  std::this_thread::get_id());
+
+        auto& metrics = internal::PrometheusMetrics::instance()
+            .get_handles(std::type_index(typeid(T)), std::this_thread::get_id());
 
         T* raw = nullptr;
 
@@ -47,18 +66,23 @@ public:
             // reuse memory block owned by unique_ptr<T>
             std::unique_ptr<T> up = std::move(subPool.pool.back());
             subPool.pool.pop_back();
-            raw = up.release();// raw points to a previously constructed T
-            raw->~T();// explicitly destroy old instance
+
+            raw = up.release(); // raw points to a previously constructed T
+
+            raw->~T(); // explicitly destroy old instance
 
             // placement-new into the same memory. If ctor throws, delete raw to avoid leak.
             try {
                 ::new (static_cast<void*>(raw)) T(std::forward<Args>(args)...);
                 metrics.reused->Increment();
-            } catch (...) {
+            }
+            catch (...) {
                 delete raw;
                 throw;
             }
-        } else {
+        }
+        else
+        {
             // allocate fresh when pool empty
             raw = new T(std::forward<Args>(args)...);
             metrics.created->Increment();
@@ -66,77 +90,22 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(lifetime_mtx_);
-            lifetime_map_[raw] = {std::chrono::steady_clock::now(), std::type_index(typeid(T))};
+            lifetime_map_[raw] = { std::chrono::steady_clock::now(), std::type_index(typeid(T)) };
         }
 
         metrics.max_size->Set(static_cast<double>(subPool.max_pool_size_));
 
-        return raw;
-    }
-
-    // Convenience: create shared_ptr that uses this pool as owner (deleter calls owner->release)
-    template<typename T, typename... Args>
-    std::shared_ptr<T> create_shared(Args&&... args)
-    {
-        T* raw = create_raw<T>(std::forward<Args>(args)...);
-        return make_shared_with_owner<T>(raw, this);
-    }
-
-    // Construct shared_ptr from raw pointer and make pool the owner (deleter calls owner->release)
-    template<typename T>
-    std::shared_ptr<T> make_shared_with_owner(T* raw, ObjectPool* owner)
-    {
-        return std::shared_ptr<T>(raw, [owner](T* p) {
-            if (owner) owner->release(static_cast<void*>(p));
-            else delete p;
-        });
+        // Shared ptr with custom deleter will route object back to appropriate pool.
+        return std::shared_ptr<T>(raw, [this](T* p) { this->release(p); });
     }
 
     // --- Create with initializer lambda (default construct then initialize)
     template<typename T, typename InitFunc>
     std::shared_ptr<T> create_with_init(InitFunc&& init)
     {
-        auto sp = create_shared<T>();
+        auto sp = create<T>();
         std::invoke(std::forward<InitFunc>(init), *sp);
         return sp;
-    }
-
-    // Release an object back to its subpool
-    void release(void* obj)
-    {
-        if (!obj) return;
-
-        LifetimeInfo info;
-        {
-            std::lock_guard<std::mutex> lock(lifetime_mtx_);
-            auto it = lifetime_map_.find(obj);
-            if (it == lifetime_map_.end()) {
-                // Unknown object (lost metadata), just delete (best effort)
-                ::operator delete(obj);
-                return;
-            }
-            info = it->second;
-            lifetime_map_.erase(it);
-        }
-
-        const double lifetime = std::chrono::duration<double>(std::chrono::steady_clock::now() - info.start).count();
-
-        auto typeId = info.type;
-        auto threadId = std::this_thread::get_id();
-        auto& metrics = internal::PrometheusMetrics::instance().get_handles(typeId, threadId);
-
-        if (lifetime > 0)
-            metrics.lifetime_hist->Observe(lifetime);
-
-        auto it = pools_.find(typeId);
-        if (it != pools_.end()) {
-            it->second->release(obj);
-            metrics.released->Increment();
-            metrics.in_pool->Set(static_cast<double>(it->second->in_pool_size()));
-        } else {
-            // Fallback
-            ::operator delete(obj);
-        }
     }
 
     // --- Pre-allocate N default-constructed objects for type T
@@ -171,22 +140,12 @@ public:
     void set_max_pool_size(size_t size)
     {
         getOrCreateSubPool<T>().max_pool_size_ = size;
-        auto& metrics = internal::PrometheusMetrics::instance().get_handles(std::type_index(typeid(T)),
-                                                                  std::this_thread::get_id());
+        auto& metrics = internal::PrometheusMetrics::instance().get_handles(
+            std::type_index(typeid(T)), std::this_thread::get_id());
         metrics.max_size->Set(static_cast<double>(size));
     }
 
 private:
-    struct LifetimeInfo {
-        std::chrono::steady_clock::time_point start;
-        std::type_index type{typeid(void)};  // Default to void type
-    };
-
-    std::unordered_map<void*, LifetimeInfo> lifetime_map_;
-    std::mutex lifetime_mtx_;
-    size_t global_max_pool_size_;
-
-
     // Base abstraction for per-type subpools
     struct ISubPool {
         virtual ~ISubPool() = default;
@@ -245,12 +204,46 @@ private:
             SubPool<T>* raw = up.get();
             raw->max_pool_size_ = global_max_pool_size_;
             pools_.emplace(idx, std::move(up));
-
-            auto& metrics = internal::PrometheusMetrics::instance().get_handles(idx, std::this_thread::get_id());
-            metrics.max_size->Set(static_cast<double>(global_max_pool_size_));
             return *raw;
         }
         return *static_cast<SubPool<T>*>(pools_[idx].get());
+    }
+
+    // Release an object back to its subpool
+    void release(void* obj)
+    {
+        if (!obj) return;
+
+        LifetimeInfo info;
+        {
+            std::lock_guard<std::mutex> lock(lifetime_mtx_);
+            auto it = lifetime_map_.find(obj);
+            if (it == lifetime_map_.end()) {
+                delete static_cast<char*>(obj);
+                return;
+            }
+            info = it->second;
+            lifetime_map_.erase(it);
+        }
+
+        const double lifetime =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - info.start).count();
+
+        auto typeId = info.type;
+        auto threadId = std::this_thread::get_id();
+        auto& metrics = internal::PrometheusMetrics::instance().get_handles(typeId, threadId);
+
+        if (lifetime > 0)
+            metrics.lifetime_hist->Observe(lifetime);
+
+        auto it = pools_.find(typeId);
+        if (it != pools_.end()) {
+            it->second->release(obj);
+            metrics.released->Increment();
+            metrics.in_pool->Set(static_cast<double>(it->second->in_pool_size()));
+        } else {
+            delete static_cast<char*>(obj);
+        }
     }
 };
 }

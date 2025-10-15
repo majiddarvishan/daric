@@ -1,10 +1,12 @@
 #pragma once
 
+#ifdef ENABLE_PROMETHEUS_METRICS
 #include <prometheus/registry.h>
 #include <prometheus/counter.h>
 #include <prometheus/gauge.h>
 #include <prometheus/histogram.h>
 #include <prometheus/exposer.h>
+
 #include <unordered_map>
 #include <typeindex>
 #include <mutex>
@@ -132,3 +134,31 @@ private:
                        MetricHandles, KeyHash, KeyEq> metrics_;
 };
 }
+
+#else
+#include <typeindex>
+#include <thread>
+
+// Provide dummy definitions so code compiles without Prometheus
+namespace daric::object_pool::internal {
+class PrometheusMetrics {
+public:
+    static PrometheusMetrics& instance() { static PrometheusMetrics inst; return inst; }
+
+    struct MetricHandles {
+        struct Dummy { void Increment() {} void Set(double) {} void Observe(double) {} } d;
+        Dummy* created = &d;
+        Dummy* reused = &d;
+        Dummy* released = &d;
+        Dummy* dropped = &d;
+        Dummy* in_pool = &d;
+        Dummy* max_size = &d;
+        Dummy* lifetime_hist = &d;
+    };
+
+    MetricHandles& get_handles(const std::type_index&, std::thread::id) {
+        static MetricHandles dummy; return dummy;
+    }
+};
+} // namespace pool::internal
+#endif

@@ -38,7 +38,7 @@ struct Message {
 void worker_thread(int id)
 {
     for (int i = 0; i < 5; ++i) {
-        auto msg = ThreadLocalObjectPool::create<Message>(
+        auto msg =  ThreadLocalObjectPool::create<Message>(
             "SRC_" + std::to_string(id),
             "DST_" + std::to_string(i),
             "Hello from thread " + std::to_string(id)
@@ -68,7 +68,7 @@ int main()
     ThreadLocalObjectPool::set_registry(registry);
 
     // Start the background reclaimer
-    ThreadLocalObjectPool::start_reclaimer(200ms);
+    // ThreadLocalObjectPool::start_reclaimer(200ms);
 
     // Launch worker threads
     std::vector<std::thread> workers;
@@ -84,10 +84,10 @@ int main()
     std::this_thread::sleep_for(1s);
 
     // Manually drain current thread (main thread) pending returns
-    ThreadLocalObjectPool::drain_current_thread_returns();
+    // ThreadLocalObjectPool::drain_current_thread_returns();
 
     // Stop background reclaimer (cleanup)
-    ThreadLocalObjectPool::stop_reclaimer();
+    // ThreadLocalObjectPool::stop_reclaimer();
 
     std::cout << "Program exiting cleanly.\n";
 }
