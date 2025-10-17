@@ -1,0 +1,1 @@
+find ../include/ -iname *.hpp | xargs clang-format-16 --dry-run --Werror

@@ -162,3 +162,63 @@ public:
 };
 } // namespace pool::internal
 #endif
+
+
+
+ShortMessagePool pool(500); // global default max size = 500
+pool.set_max_pool_size<SubmitSM>(2000);  // override per-type
+pool.set_max_pool_size<DeliverSM>(300);  // smaller pool for DeliverSM
+
+struct Buffer {
+    std::vector<char> data;
+    void reset() { data.clear(); }
+};
+
+struct User {
+    std::string name;
+    int age{};
+    void reset() { name.clear(); age = 0; }
+};
+
+int main() {
+    ObjectPool pool(500);
+
+    pool.set_max_pool_size<Buffer>(100);
+    pool.set_max_pool_size<User>(50);
+
+    auto b = pool.create<Buffer>();
+    b->data.assign(1024, 'x');
+
+    auto u = pool.create<User>("Majid", 27);
+
+    // When b and u go out of scope, they’re auto-released back to the pool
+}
+
+
+Would you like me to also provide a thread-local wrapper (ThreadLocalObjectPool) built on top of this generic pool — so each thread keeps its own sub-pools for even better performance (no locking)?
+
+my_library/
+│
+├── include/
+│   └── my_library/
+│       ├── object_pool.h
+│       └── utils.h
+│
+├── src/
+│   ├── object_pool.cpp
+│   └── utils.cpp
+│
+├── tests/
+│   └── object_pool_tests.cpp
+│
+└── CMakeLists.txt
+
+
+convert the pending queue to a lock-free MPSC queue for even lower contention,
+
+
+Add a small usage example showing make_shared_with_control_alloc and how to rebind allocators?
+
+Add unit tests or a micro-benchmark comparing unique_ptr vs shared_ptr paths?
+
+ ThreadLocalObjectPool::create

@@ -1,25 +1,35 @@
 #pragma once
-#include <vector>
-#include <thread>
-#include <queue>
+#include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <condition_variable>
-#include <atomic>
+#include <queue>
+#include <thread>
+#include <vector>
 
-namespace daric {
+namespace daric
+{
 
-class ThreadPool {
-public:
-    ThreadPool(size_t threads = std::thread::hardware_concurrency()) : stop(false) {
-        for(size_t i = 0; i < threads; ++i)
+class ThreadPool
+{
+  public:
+    ThreadPool(size_t threads = std::thread::hardware_concurrency())
+      : stop(false)
+    {
+        for (size_t i = 0; i < threads; ++i)
             workers.emplace_back([this] {
-                while(true) {
+                while (true)
+                {
                     std::function<void()> task;
                     {
                         std::unique_lock<std::mutex> lock(this->queue_mutex);
-                        this->condition.wait(lock, [this]{ return this->stop || !this->tasks.empty(); });
-                        if(this->stop && this->tasks.empty()) return;
+                        this->condition.wait(
+                            lock,
+                            [this] {
+                                return this->stop || !this->tasks.empty();
+                            });
+                        if (this->stop && this->tasks.empty())
+                            return;
                         task = std::move(this->tasks.front());
                         this->tasks.pop();
                     }
@@ -29,7 +39,8 @@ public:
     }
 
     template<class F>
-    void enqueue(F&& f) {
+    void enqueue(F&& f)
+    {
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
             tasks.emplace(std::forward<F>(f));
@@ -37,16 +48,18 @@ public:
         condition.notify_one();
     }
 
-    ~ThreadPool() {
+    ~ThreadPool()
+    {
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
             stop = true;
         }
         condition.notify_all();
-        for(std::thread &worker : workers) worker.join();
+        for (std::thread& worker : workers)
+            worker.join();
     }
 
-private:
+  private:
     std::vector<std::thread> workers;
     std::queue<std::function<void()>> tasks;
 
@@ -55,4 +68,4 @@ private:
     std::atomic<bool> stop;
 };
 
-} // namespace daric
+}  // namespace daric

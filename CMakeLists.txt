@@ -20,7 +20,7 @@ option(BUILD_LOGGER "Build Logger module" ON)
 option(BUILD_THREADPOOL "Build ThreadPool module" ON)
 option(BUILD_NETWORKING "Build Networking module" ON)
 option(BUILD_OBJECT_POOL "Build ObjectPool module" ON)
-option(BUILD_TESTS "Build tests" OFF)
+option(BUILD_TESTS "Build tests" ON)
 option(BUILD_EXAMPLES "Build examples" ON)
 
 # -----------------------------

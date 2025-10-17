@@ -1,0 +1,1 @@
+clang-tidy-16 -header-filter=.* -p=../build ../test/code_analysis.cpp

@@ -1,29 +1,36 @@
 #pragma once
 
-#include "object_pool.h"
-
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <unordered_map>
 
-/**
- * Thread-local global message pool manager.
- *
- * Each thread transparently gets its own ObjectPool instance.
- * Access via ThreadLocalObjectPool::instance() which returns a reference
- * to the thread-local pool.
- *
- * Example:
- *   auto& pool = ThreadLocalObjectPool::instance();
- *   auto msg = pool.create<SubmitSM>("src","dst","hello");
- */
+#include "object_pool.h"
+
+// A convenience wrapper that gives each thread its own shared ObjectPool
+// instance Note: the global/shared file-level object pool is intended to be
+// created using std::make_shared<ObjectPool>() so deleters can use
+// weak_from_this safely.
+
 namespace daric::object_pool
 {
-class ThreadLocalObjectPool {
-public:
-    // Get the pool instance for the current thread
-    static ObjectPool& instance() {
-        thread_local ObjectPool pool;
-        return pool;
+class ThreadLocalObjectPool
+{
+  public:
+    // Return a shared_ptr-managed ObjectPool that is thread-local.
+    static std::shared_ptr<ObjectPool> instance()
+    {
+        thread_local std::shared_ptr<ObjectPool> inst =
+            std::make_shared<ObjectPool>();
+        return inst;
+    }
+
+    // Alternatively, provide a process-global pool (if you want single pool
+    // across threads)
+    static std::shared_ptr<ObjectPool> global_instance()
+    {
+        static std::shared_ptr<ObjectPool> g = std::make_shared<ObjectPool>();
+        return g;
     }
 
     // Prevent construction / copying
@@ -35,10 +42,7 @@ public:
     template<typename T, typename... Args>
     static std::shared_ptr<T> create(Args&&... args)
     {
-        return instance().create<T>(std::forward<Args>(args)...);
-        // auto sp = create<T>();
-        // std::invoke(std::forward<InitFunc>(init), *sp);
-        // return sp;
+        return instance()->create<T>(std::forward<Args>(args)...);
     }
 
     static void set_registry(std::shared_ptr<prometheus::Registry> registry)
@@ -46,4 +50,4 @@ public:
         internal::PrometheusMetrics::instance().set_registry(registry);
     }
 };
-}
+}  // namespace daric::object_pool

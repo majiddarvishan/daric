@@ -1,249 +1,260 @@
+// object_pool.h
 #pragma once
+
+#include <cassert>
+#include <chrono>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <typeindex>
+#include <typeinfo>
+#include <unordered_map>
+#include <vector>
 
 #include "internal/prometheus_metrics.h"
 
-#include <memory>
-#include <vector>
-#include <unordered_map>
-#include <typeindex>
-#include <type_traits>
-#include <functional>
-#include <new>
-#include <utility>
-#include <cassert>
-#include <mutex>
-#include <chrono>
-
-/**
- * ObjectPool
- * -------------------------------------------------------------
- * Supports any type T.
- *
- * Features:
- *  - Thread-aware metrics (Prometheus)
- *  - Lifetime tracking
- *  - Global + per-type max size
- *  - Factory-style create<T>(args...)
- *  - Automatic reset() if defined
- *
- * Safety:
- *  - When reusing an object from the pool, the code explicitly calls the destructor
- *    for that object (raw->~T()) before placement-new constructing the new object.
- *    This ensures proper cleanup of non-trivial members (file descriptors, buffers, etc).
- */
 namespace daric::object_pool
 {
-class ObjectPool
+class ObjectPool : public std::enable_shared_from_this<ObjectPool>
 {
-    struct LifetimeInfo {
-        std::chrono::steady_clock::time_point start;
-        std::type_index type{typeid(void)};  // Default to void type
-    };
-
-    std::unordered_map<void*, LifetimeInfo> lifetime_map_;
-    std::mutex lifetime_mtx_;
-    size_t global_max_pool_size_;
-
-
-public:
-    explicit ObjectPool(size_t global_max_pool_size = 1000)
-        : global_max_pool_size_(global_max_pool_size) {}
-
+  public:
+    ObjectPool() = default;
     ~ObjectPool() = default;
 
-    // --- Create with constructor arguments
+    // Set global maximum pool size for all subpools
+    void set_global_max_pool_size(size_t ms)
+    {
+        std::lock_guard<std::mutex> g(pools_mtx_);
+        global_max_pool_size_ = ms;
+        // update existing subpools safely
+        for (auto& p : pools_)
+        {
+            p.second->set_max_size(ms);
+        }
+    }
+
+    // Create/obtain an object of type T (forward constructor args)
     template<typename T, typename... Args>
     std::shared_ptr<T> create(Args&&... args)
     {
-        auto& subPool = getOrCreateSubPool<T>();
-
-        auto& metrics = internal::PrometheusMetrics::instance()
-            .get_handles(std::type_index(typeid(T)), std::this_thread::get_id());
+        // Obtain or create the typed subpool
+        SubPool<T>* sub = getOrCreateSubPool<T>();
 
         T* raw = nullptr;
-
-        if (!subPool.pool.empty()) {
-            // reuse memory block owned by unique_ptr<T>
-            std::unique_ptr<T> up = std::move(subPool.pool.back());
-            subPool.pool.pop_back();
-
-            raw = up.release(); // raw points to a previously constructed T
-
-            raw->~T(); // explicitly destroy old instance
-
-            // placement-new into the same memory. If ctor throws, delete raw to avoid leak.
-            try {
-                ::new (static_cast<void*>(raw)) T(std::forward<Args>(args)...);
-                metrics.reused->Increment();
+        {
+            std::lock_guard<std::mutex> lg(sub->mtx_);
+            if (!sub->pool.empty())
+            {
+                std::unique_ptr<T> up = std::move(sub->pool.back());
+                sub->pool.pop_back();
+                raw = up.release();
             }
-            catch (...) {
+        }
+
+        if (raw)
+        {
+            // reuse: destroy and placement-new with new args
+            raw->~T();
+            try
+            {
+                ::new (static_cast<void*>(raw)) T(std::forward<Args>(args)...);
+            }
+            catch (...)
+            {
+                // If ctor throws, free memory
                 delete raw;
                 throw;
             }
         }
         else
         {
-            // allocate fresh when pool empty
+            // allocate new
             raw = new T(std::forward<Args>(args)...);
-            metrics.created->Increment();
         }
 
+        // track lifetime metadata (thread-safe)
         {
-            std::lock_guard<std::mutex> lock(lifetime_mtx_);
-            lifetime_map_[raw] = { std::chrono::steady_clock::now(), std::type_index(typeid(T)) };
+            std::lock_guard<std::mutex> lg(lifetime_mtx_);
+            LifetimeInfo info;
+            info.start = std::chrono::steady_clock::now();
+            info.type = std::type_index(typeid(T));
+            info.subpool = sub;
+            lifetime_map_[raw] = std::move(info);
         }
 
-        metrics.max_size->Set(static_cast<double>(subPool.max_pool_size_));
-
-        // Shared ptr with custom deleter will route object back to appropriate pool.
-        return std::shared_ptr<T>(raw, [this](T* p) { this->release(p); });
+        // create shared_ptr with safe deleter that captures a weak_ptr to this pool
+        std::weak_ptr<ObjectPool> weak_pool = this->weak_from_this();
+        auto deleter = [weak_pool](T* p) {
+            if (auto pool = weak_pool.lock())
+            {
+                pool->release(static_cast<void*>(p));
+            }
+            else
+            {
+                // Pool no longer exists: delete the object to avoid leak.
+                delete p;
+            }
+        };
+        return std::shared_ptr<T>(raw, std::move(deleter));
     }
 
-    // --- Create with initializer lambda (default construct then initialize)
-    template<typename T, typename InitFunc>
-    std::shared_ptr<T> create_with_init(InitFunc&& init)
-    {
-        auto sp = create<T>();
-        std::invoke(std::forward<InitFunc>(init), *sp);
-        return sp;
-    }
-
-    // --- Pre-allocate N default-constructed objects for type T
-    template<typename T>
-    void reserve(size_t n)
-    {
-        auto& subPool = getOrCreateSubPool<T>();
-        subPool.pool.reserve(n);
-        while (subPool.pool.size() < n && subPool.pool.size() < subPool.max_pool_size_) {
-            subPool.pool.push_back(std::make_unique<T>());
-        }
-    }
-
-    // --- Monitoring helper
-    template<typename T>
+    // Number of objects currently available in all subpools
     size_t available() const
     {
-        auto it = pools_.find(std::type_index(typeid(T)));
-        if (it == pools_.end()) return 0;
-        return static_cast<const SubPool<T>*>(it->second.get())->pool.size();
+        size_t total = 0;
+        std::lock_guard<std::mutex> g(pools_mtx_);
+        for (auto const& kv : pools_)
+        {
+            ISubPool* base = kv.second.get();
+            total += base->in_pool_size();
+        }
+        return total;
     }
 
-    // --- Configuration: global & per-type max sizes
-    void set_global_max_pool_size(size_t size)
+  private:
+    struct ISubPool
     {
-        global_max_pool_size_ = size;
-        for (auto& [_, base] : pools_)
-            base->set_max_size(size);
-    }
-
-    template<typename T>
-    void set_max_pool_size(size_t size)
-    {
-        getOrCreateSubPool<T>().max_pool_size_ = size;
-        auto& metrics = internal::PrometheusMetrics::instance().get_handles(
-            std::type_index(typeid(T)), std::this_thread::get_id());
-        metrics.max_size->Set(static_cast<double>(size));
-    }
-
-private:
-    // Base abstraction for per-type subpools
-    struct ISubPool {
         virtual ~ISubPool() = default;
         virtual void release(void* obj) = 0;
         virtual size_t in_pool_size() const = 0;
-        virtual void set_max_size(size_t size) = 0;
+        virtual void set_max_size(size_t) = 0;
     };
 
-    // Typed subpool implementation
     template<typename T>
-    struct SubPool : ISubPool {
+    struct SubPool final : ISubPool
+    {
         std::vector<std::unique_ptr<T>> pool;
         size_t max_pool_size_{1000};
+        mutable std::mutex mtx_;  // protects pool and max_pool_size_
 
         void release(void* obj) override
         {
-            // Cast to correct type
             T* t = static_cast<T*>(obj);
-            auto& metrics = internal::PrometheusMetrics::instance()
-                .get_handles(std::type_index(typeid(T)), std::this_thread::get_id());
-
-            if constexpr (requires(T& o) { o.reset(); }) {
-                try { t->reset(); } catch (...) {
-                    // swallow reset exceptions to avoid pool corruption;
-                    // if reset fails, we still push the object back to the pool.
+            bool returned = false;
+            {
+                std::lock_guard<std::mutex> lg(mtx_);
+                if (pool.size() < max_pool_size_)
+                {
+                    // wrap raw pointer into unique_ptr and push back
+                    pool.emplace_back(std::unique_ptr<T>(t));
+                    returned = true;
                 }
             }
 
-            if (pool.size() < max_pool_size_) {
-                // Re-wrap raw pointer into unique_ptr<T> and push back to pool.
-                pool.emplace_back(t);
-            } else {
-                // Pool is full → delete the message to prevent unbounded growth
+            if (!returned)
+            {
+                // pool full: destroy object and update metrics
                 delete t;
-                metrics.dropped->Increment();
+                try
+                {
+                    internal::PrometheusMetrics::instance()
+                        .get_handles(std::type_index(typeid(T)),
+                                     std::this_thread::get_id())
+                        .dropped->Increment();
+                }
+                catch (...)
+                {
+                    // metric failures must not throw on the hot path
+                }
             }
-
-            metrics.max_size->Set(static_cast<double>(max_pool_size_));
         }
 
-        size_t in_pool_size() const override { return pool.size(); }
-        void set_max_size(size_t size) override { max_pool_size_ = size; }
+        size_t in_pool_size() const override
+        {
+            std::lock_guard<std::mutex> lg(mtx_);
+            return pool.size();
+        }
+        void set_max_size(size_t s) override
+        {
+            std::lock_guard<std::mutex> lg(mtx_);
+            max_pool_size_ = s;
+        }
     };
 
-    // Map: type_index → subpool
-    std::unordered_map<std::type_index, std::unique_ptr<ISubPool>> pools_;
-
-    // Get or create subpool for T
-    template<typename T>
-    SubPool<T>& getOrCreateSubPool()
+    struct LifetimeInfo
     {
-        auto idx = std::type_index(typeid(T));
-        auto it = pools_.find(idx);
-        if (it == pools_.end()) {
-            auto up = std::make_unique<SubPool<T>>();
-            SubPool<T>* raw = up.get();
-            raw->max_pool_size_ = global_max_pool_size_;
-            pools_.emplace(idx, std::move(up));
-            return *raw;
-        }
-        return *static_cast<SubPool<T>*>(pools_[idx].get());
-    }
+        std::chrono::steady_clock::time_point start;
+        std::type_index type{typeid(void)};
+        ISubPool* subpool{nullptr};
+    };
 
-    // Release an object back to its subpool
+    // release called from deleter
     void release(void* obj)
     {
-        if (!obj) return;
-
+        // Remove from lifetime map and return to correct subpool
         LifetimeInfo info;
         {
-            std::lock_guard<std::mutex> lock(lifetime_mtx_);
+            std::lock_guard<std::mutex> lg(lifetime_mtx_);
             auto it = lifetime_map_.find(obj);
-            if (it == lifetime_map_.end()) {
-                delete static_cast<char*>(obj);
+            if (it == lifetime_map_.end())
+            {
+                // Unexpected: not tracked by this pool
+                std::cerr << "ObjectPool::release(): unknown object pointer; possible "
+                             "double free or external pointer.\n";
+                assert(false && "release() called for unknown pointer");
+                ::operator delete(obj);  // fallback: free raw memory (best-effort)
                 return;
             }
             info = it->second;
             lifetime_map_.erase(it);
         }
 
-        const double lifetime =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - info.start).count();
-
-        auto typeId = info.type;
-        auto threadId = std::this_thread::get_id();
-        auto& metrics = internal::PrometheusMetrics::instance().get_handles(typeId, threadId);
-
-        if (lifetime > 0)
-            metrics.lifetime_hist->Observe(lifetime);
-
-        auto it = pools_.find(typeId);
-        if (it != pools_.end()) {
-            it->second->release(obj);
-            metrics.released->Increment();
-            metrics.in_pool->Set(static_cast<double>(it->second->in_pool_size()));
-        } else {
-            delete static_cast<char*>(obj);
+        // use stored subpool pointer to avoid extra lookup
+        if (info.subpool)
+        {
+            info.subpool->release(obj);
+            // update metrics
+            try
+            {
+                internal::PrometheusMetrics::instance()
+                    .get_handles(info.type, std::this_thread::get_id())
+                    .returning->Increment();
+            }
+            catch (...)
+            {
+            }
+        }
+        else
+        {
+            // should not happen, but be defensive
+            std::cerr << "ObjectPool::release(): subpool lost; deleting object\n";
+            delete static_cast<char*>(
+                obj);  // fallback - but better to delete with proper type, we can't
         }
     }
+
+    // type-indexed subpools
+    template<typename T>
+    SubPool<T>* getOrCreateSubPool()
+    {
+        std::type_index idx(typeid(T));
+        {
+            std::lock_guard<std::mutex> g(pools_mtx_);
+            auto it = pools_.find(idx);
+            if (it != pools_.end())
+            {
+                return static_cast<SubPool<T>*>(it->second.get());
+            }
+
+            auto up = std::make_unique<SubPool<T>>();
+            up->max_pool_size_ = global_max_pool_size_;
+            SubPool<T>* raw = up.get();
+            pools_.emplace(idx, std::move(up));
+            return raw;
+        }
+    }
+
+    // Members
+    size_t global_max_pool_size_{1000};
+
+    // Protects pools_ map
+    mutable std::mutex pools_mtx_;
+    std::unordered_map<std::type_index, std::unique_ptr<ISubPool>> pools_;
+
+    // lifetime tracking
+    mutable std::mutex lifetime_mtx_;
+    std::unordered_map<void*, LifetimeInfo> lifetime_map_;
 };
-}
+}  // namespace daric::object_pool
